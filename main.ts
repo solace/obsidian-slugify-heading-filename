@@ -25,6 +25,7 @@ interface LinePointer {
 interface FilenameSlugHeadingSyncPluginSettings {
   includeRegex: string;
   includedFiles: { [key: string]: null };
+  sortingDelimiter: string;
   useFileOpenHook: boolean;
   useFileSaveHook: boolean;
 }
@@ -32,6 +33,7 @@ interface FilenameSlugHeadingSyncPluginSettings {
 const DEFAULT_SETTINGS: FilenameSlugHeadingSyncPluginSettings = {
   includedFiles: {},
   includeRegex: '',
+  sortingDelimiter: '',
   useFileOpenHook: true,
   useFileSaveHook: true,
 };
@@ -140,15 +142,16 @@ export default class FilenameSlugHeadingSyncPlugin extends Plugin {
 
       if (heading === null) return; // no heading found, nothing to do here
 
+      const regex = new RegExp(`^((?<order>\\d[\\d\\.]*)${this.settings.sortingDelimiter})?(?<title>.*)$`);
       const slugifiedHeading = this.slugify(heading.text);
-      if (
-        slugifiedHeading.length > 0 &&
-        this.slugify(file.basename) !== slugifiedHeading
-      ) {
-        const newPath = `${file.parent.path}/${slugifiedHeading}.md`;
-        this.isRenameInProgress = true;
-        await this.app.fileManager.renameFile(file, newPath);
-        this.isRenameInProgress = false;
+      if (slugifiedHeading.length > 0) {
+        const matches = file.basename.match(regex);
+        if (matches && matches.groups?.title !== slugifiedHeading) {
+          const newPath = `${file.parent.path}/${[matches.groups?.order, slugifiedHeading].filter((t) => Boolean(t)).join(this.settings.sortingDelimiter ?? '')}.md`;
+          this.isRenameInProgress = true;
+          await this.app.fileManager.renameFile(file, newPath);
+          this.isRenameInProgress = false;
+        }
       }
     });
   }
@@ -214,6 +217,7 @@ export default class FilenameSlugHeadingSyncPlugin extends Plugin {
       .replace(/[\u0300-\u036f]/g, '') // remove all the accents, which happen to be all in the \u03xx UNICODE block.
       .trim() // trim leading or trailing whitespace
       .toLowerCase() // convert to lowercase
+      .replace(/[\/\\]/, '-') // Replace slashes with hyphen for legibility
       .replace(/[^a-z0-9 -]/g, '') // remove non-alphanumeric characters
       .replace(/\s+/g, '-') // replace spaces with hyphens
       .replace(/-+/g, '-'); // remove consecutive hyphens
@@ -293,6 +297,20 @@ class SlugifyHeadingFilenameSettingTab extends PluginSettingTab {
             renderRegexIncludedFiles(regexIncludedFilesDiv);
           }),
       );
+
+    new Setting(containerEl)
+      .setName("Sorting Delimiter")
+      .setDesc(
+        'If you have filename-based sorting, eg. "1 -- A Title", what delimiter are you using?'
+      )
+      .addText((delimiter) => {
+        delimiter
+          .setValue(this.plugin.settings.sortingDelimiter)
+          .onChange(async (value) => {
+            this.plugin.settings.sortingDelimiter = value;
+            await this.plugin.saveSettings();
+          });
+      });
 
     new Setting(containerEl)
       .setName('Use File Open Hook')
