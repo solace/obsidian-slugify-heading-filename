@@ -11,9 +11,5 @@ export function isExcalidraw(app: App, f: TFile) {
 }
 
 export function isExcluded(app: App, f: TFile) {
-  if (isExcalidraw(app, f)) {
-    return true;
-  }
-
-  return false;
+  return isExcalidraw(app, f);
 }

@@ -10,8 +10,6 @@ import {
 } from 'obsidian';
 import { isExcluded } from './exclusions';
 
-const stockIllegalSymbols = /[\\/:|#^[\]]/g;
-
 // Must be Strings unless settings dialog is updated.
 const enum HeadingStyle {
   Prefix = 'Prefix',
@@ -24,70 +22,47 @@ interface LinePointer {
   style: HeadingStyle;
 }
 
-interface FilenameHeadingSyncPluginSettings {
-  userIllegalSymbols: string[];
-  ignoreRegex: string;
-  ignoredFiles: { [key: string]: null };
+interface FilenameSlugHeadingSyncPluginSettings {
+  includeRegex: string;
+  includedFiles: { [key: string]: null };
   useFileOpenHook: boolean;
   useFileSaveHook: boolean;
-  newHeadingStyle: HeadingStyle;
-  replaceStyle: boolean;
-  underlineString: string;
 }
 
-const DEFAULT_SETTINGS: FilenameHeadingSyncPluginSettings = {
-  userIllegalSymbols: [],
-  ignoredFiles: {},
-  ignoreRegex: '',
+const DEFAULT_SETTINGS: FilenameSlugHeadingSyncPluginSettings = {
+  includedFiles: {},
+  includeRegex: '',
   useFileOpenHook: true,
   useFileSaveHook: true,
-  newHeadingStyle: HeadingStyle.Prefix,
-  replaceStyle: false,
-  underlineString: '===',
 };
 
-export default class FilenameHeadingSyncPlugin extends Plugin {
+export default class FilenameSlugHeadingSyncPlugin extends Plugin {
   isRenameInProgress: boolean = false;
-  settings: FilenameHeadingSyncPluginSettings;
+  settings: FilenameSlugHeadingSyncPluginSettings;
 
   async onload() {
     await this.loadSettings();
 
     this.registerEvent(
-      this.app.vault.on('rename', (file, oldPath) => {
-        if (this.settings.useFileSaveHook) {
-          return this.handleSyncFilenameToHeading(file, oldPath);
-        }
-      }),
-    );
-    this.registerEvent(
       this.app.vault.on('modify', (file) => {
         if (this.settings.useFileSaveHook) {
-          return this.handleSyncHeadingToFile(file);
+          return this.handleRenameFile(file);
         }
       }),
     );
 
-    this.registerEvent(
-      this.app.workspace.on('file-open', (file) => {
-        if (this.settings.useFileOpenHook && file !== null) {
-          return this.handleSyncFilenameToHeading(file, file.path);
-        }
-      }),
-    );
-
-    this.addSettingTab(new FilenameHeadingSyncSettingTab(this.app, this));
+    this.addSettingTab(new SlugifyHeadingFilenameSettingTab(this.app, this));
 
     this.addCommand({
-      id: 'page-heading-sync-ignore-file',
-      name: 'Ignore current file',
+      id: 'page-heading-sync-include-file',
+      name: 'Include current file',
       checkCallback: (checking: boolean) => {
         let leaf = this.app.workspace.activeLeaf;
         if (leaf) {
           if (!checking) {
-            this.settings.ignoredFiles[
+            this.settings.includedFiles[
               this.app.workspace.getActiveFile().path
-            ] = null;
+              ] = null;
             this.saveSettings();
           }
           return true;
@@ -97,38 +72,31 @@ export default class FilenameHeadingSyncPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: 'sync-filename-to-heading',
-      name: 'Sync Filename to Heading',
+      id: 'slugify-heading-as-filename',
+      name: 'Slugify Heading as Filename',
       editorCallback: (editor: Editor, view: MarkdownView) =>
-        this.forceSyncFilenameToHeading(view.file),
-    });
-
-    this.addCommand({
-      id: 'sync-heading-to-filename',
-      name: 'Sync Heading to Filename',
-      editorCallback: (editor: Editor, view: MarkdownView) =>
-        this.forceSyncHeadingToFilename(view.file),
+        this.forceRenameFile(view.file),
     });
   }
 
-  fileIsIgnored(activeFile: TFile, path: string): boolean {
+  fileIsIncluded(activeFile: TFile, path: string): boolean {
     // check exclusions
     if (isExcluded(this.app, activeFile)) {
       return true;
     }
 
-    // check manual ignore
-    if (this.settings.ignoredFiles[path] !== undefined) {
+    // check manual include
+    if (this.settings.includedFiles[path] !== undefined) {
       return true;
     }
 
     // check regex
     try {
-      if (this.settings.ignoreRegex === '') {
+      if (this.settings.includeRegex === '') {
         return;
       }
 
-      const reg = new RegExp(this.settings.ignoreRegex);
+      const reg = new RegExp(this.settings.includeRegex);
       return reg.exec(path) !== null;
     } catch {}
 
@@ -140,7 +108,7 @@ export default class FilenameHeadingSyncPlugin extends Plugin {
    *
    * @param      {TAbstractFile}  file    The file
    */
-  handleSyncHeadingToFile(file: TAbstractFile) {
+  handleRenameFile(file: TAbstractFile) {
     if (!(file instanceof TFile)) {
       return;
     }
@@ -156,15 +124,15 @@ export default class FilenameHeadingSyncPlugin extends Plugin {
       return;
     }
 
-    // if ignored, just bail
-    if (this.fileIsIgnored(file, file.path)) {
+    // if included, just bail
+    if (!this.fileIsIncluded(file, file.path)) {
       return;
     }
 
-    this.forceSyncHeadingToFilename(file);
+    this.forceRenameFile(file);
   }
 
-  forceSyncHeadingToFilename(file: TFile) {
+  forceRenameFile(file: TFile) {
     this.app.vault.read(file).then(async (data) => {
       const lines = data.split('\n');
       const start = this.findNoteStart(lines);
@@ -172,78 +140,16 @@ export default class FilenameHeadingSyncPlugin extends Plugin {
 
       if (heading === null) return; // no heading found, nothing to do here
 
-      const sanitizedHeading = this.sanitizeHeading(heading.text);
+      const slugifiedHeading = this.slugify(heading.text);
       if (
-        sanitizedHeading.length > 0 &&
-        this.sanitizeHeading(file.basename) !== sanitizedHeading
+        slugifiedHeading.length > 0 &&
+        this.slugify(file.basename) !== slugifiedHeading
       ) {
-        const newPath = `${file.parent.path}/${sanitizedHeading}.md`;
+        const newPath = `${file.parent.path}/${slugifiedHeading}.md`;
         this.isRenameInProgress = true;
         await this.app.fileManager.renameFile(file, newPath);
         this.isRenameInProgress = false;
       }
-    });
-  }
-
-  /**
-   * Syncs the current filename to the first heading
-   * Finds the first heading of the file, then replaces it with the filename
-   *
-   * @param      {TAbstractFile}  file     The file that fired the event
-   * @param      {string}         oldPath  The old path
-   */
-  handleSyncFilenameToHeading(file: TAbstractFile, oldPath: string) {
-    if (this.isRenameInProgress) {
-      return;
-    }
-
-    if (!(file instanceof TFile)) {
-      return;
-    }
-
-    if (file.extension !== 'md') {
-      // just bail
-      return;
-    }
-
-    // if oldpath is ignored, hook in and update the new filepath to be ignored instead
-    if (this.fileIsIgnored(file, oldPath.trim())) {
-      // if filename didn't change, just bail, nothing to do here
-      if (file.path === oldPath) {
-        return;
-      }
-
-      // If filepath changed and the file was in the ignore list before,
-      // remove it from the list and add the new one instead
-      if (this.settings.ignoredFiles[oldPath]) {
-        delete this.settings.ignoredFiles[oldPath];
-        this.settings.ignoredFiles[file.path] = null;
-        this.saveSettings();
-      }
-      return;
-    }
-
-    this.forceSyncFilenameToHeading(file);
-  }
-
-  forceSyncFilenameToHeading(file: TFile) {
-    const sanitizedHeading = this.sanitizeHeading(file.basename);
-    this.app.vault.read(file).then((data) => {
-      const lines = data.split('\n');
-      const start = this.findNoteStart(lines);
-      const heading = this.findHeading(lines, start);
-
-      if (heading !== null) {
-        if (this.sanitizeHeading(heading.text) !== sanitizedHeading) {
-          this.replaceHeading(
-            file,
-            lines,
-            heading.lineNumber,
-            heading.style,
-            sanitizedHeading,
-          );
-        }
-      } else this.insertHeading(file, lines, start, sanitizedHeading);
     });
   }
 
@@ -299,201 +205,18 @@ export default class FilenameHeadingSyncPlugin extends Plugin {
     return null; // no heading found
   }
 
-  regExpEscape(str: string): string {
-    return String(str).replace(/[\\^$*+?.()|[\]{}]/g, '\\$&');
-  }
-
-  sanitizeHeading(text: string) {
-    // stockIllegalSymbols is a regExp object, but userIllegalSymbols is a list of strings and therefore they are handled separately.
-    text = text.replace(stockIllegalSymbols, '');
-
-    const userIllegalSymbolsEscaped = this.settings.userIllegalSymbols.map(
-      (str) => this.regExpEscape(str),
-    );
-    const userIllegalSymbolsRegExp = new RegExp(
-      userIllegalSymbolsEscaped.join('|'),
-      'g',
-    );
-    text = text.replace(userIllegalSymbolsRegExp, '');
-    return text.trim();
-  }
-
   /**
-   * Insert the `heading` at `lineNumber` in `file`.
-   *
-   * @param {TFile} file the file to modify
-   * @param {string[]} fileLines array of the file's contents, line by line
-   * @param {number} lineNumber zero-based index of the line to replace
-   * @param {string} text the new text
+   * https://byby.dev/js-slugify-string
    */
-  insertHeading(
-    file: TFile,
-    fileLines: string[],
-    lineNumber: number,
-    heading: string,
-  ) {
-    const newStyle = this.settings.newHeadingStyle;
-    switch (newStyle) {
-      case HeadingStyle.Underline: {
-        this.insertLineInFile(file, fileLines, lineNumber, `${heading}`);
-
-        this.insertLineInFile(
-          file,
-          fileLines,
-          lineNumber + 1,
-          this.settings.underlineString,
-        );
-        break;
-      }
-      case HeadingStyle.Prefix: {
-        this.insertLineInFile(file, fileLines, lineNumber, `# ${heading}`);
-        break;
-      }
-    }
-  }
-
-  /**
-   * Modified `file` by replacing the heading at `lineNumber` with `newHeading`,
-   * updating the heading style according the user settings.
-   *
-   * @param {TFile} file the file to modify
-   * @param {string[]} fileLines array of the file's contents, line by line
-   * @param {number} lineNumber zero-based index of the line to replace
-   * @param {HeadingStyle} oldStyle the style of the original heading
-   * @param {string} text the new text
-   */
-  replaceHeading(
-    file: TFile,
-    fileLines: string[],
-    lineNumber: number,
-    oldStyle: HeadingStyle,
-    newHeading: string,
-  ) {
-    const newStyle = this.settings.newHeadingStyle;
-    const replaceStyle = this.settings.replaceStyle;
-    // If replacing the style
-    if (replaceStyle) {
-      switch (newStyle) {
-        // For underline style, replace heading line...
-        case HeadingStyle.Underline: {
-          this.replaceLineInFile(file, fileLines, lineNumber, `${newHeading}`);
-          //..., then add or replace underline.
-          switch (oldStyle) {
-            case HeadingStyle.Prefix: {
-              this.insertLineInFile(
-                file,
-                fileLines,
-                lineNumber + 1,
-                this.settings.underlineString,
-              );
-              break;
-            }
-            case HeadingStyle.Underline: {
-              // Update underline with setting.
-              this.replaceLineInFile(
-                file,
-                fileLines,
-                lineNumber + 1,
-                this.settings.underlineString,
-              );
-              break;
-            }
-          }
-          break;
-        }
-        // For prefix style, replace heading line, and possibly delete underline
-        case HeadingStyle.Prefix: {
-          this.replaceLineInFile(
-            file,
-            fileLines,
-            lineNumber,
-            `# ${newHeading}`,
-          );
-          switch (oldStyle) {
-            case HeadingStyle.Prefix: {
-              // nop
-              break;
-            }
-            case HeadingStyle.Underline: {
-              this.replaceLineInFile(file, fileLines, lineNumber + 1, '');
-              break;
-            }
-          }
-          break;
-        }
-      }
-    } else {
-      // If not replacing style, match
-      switch (oldStyle) {
-        case HeadingStyle.Underline: {
-          this.replaceLineInFile(file, fileLines, lineNumber, `${newHeading}`);
-          break;
-        }
-        case HeadingStyle.Prefix: {
-          this.replaceLineInFile(
-            file,
-            fileLines,
-            lineNumber,
-            `# ${newHeading}`,
-          );
-          break;
-        }
-      }
-    }
-  }
-
-  /**
-   * Modifies the file by replacing a particular line with new text.
-   *
-   * The function will add a newline character at the end of the replaced line.
-   *
-   * If the `lineNumber` parameter is higher than the index of the last line of the file
-   * the function will add a newline character to the current last line and append a new
-   * line at the end of the file with the new text (essentially a new last line).
-   *
-   * @param {TFile} file the file to modify
-   * @param {string[]} fileLines array of the file's contents, line by line
-   * @param {number} lineNumber zero-based index of the line to replace
-   * @param {string} text the new text
-   */
-  replaceLineInFile(
-    file: TFile,
-    fileLines: string[],
-    lineNumber: number,
-    text: string,
-  ) {
-    if (lineNumber >= fileLines.length) {
-      fileLines.push(text + '\n');
-    } else {
-      fileLines[lineNumber] = text;
-    }
-    const data = fileLines.join('\n');
-    this.app.vault.modify(file, data);
-  }
-
-  /**
-   * Modifies the file by inserting a line with specified text.
-   *
-   * The function will add a newline character at the end of the inserted line.
-   *
-   * @param {TFile} file the file to modify
-   * @param {string[]} fileLines array of the file's contents, line by line
-   * @param {number} lineNumber zero-based index of where the line should be inserted
-   * @param {string} text the text that the line shall contain
-   */
-  insertLineInFile(
-    file: TFile,
-    fileLines: string[],
-    lineNumber: number,
-    text: string,
-  ) {
-    if (lineNumber >= fileLines.length) {
-      fileLines.push(text + '\n');
-    } else {
-      fileLines.splice(lineNumber, 0, text);
-    }
-    const data = fileLines.join('\n');
-    this.app.vault.modify(file, data);
+  slugify(text: string) {
+    return String(text)
+      .normalize('NFKD') // split accented characters into their base characters and diacritical marks
+      .replace(/[\u0300-\u036f]/g, '') // remove all the accents, which happen to be all in the \u03xx UNICODE block.
+      .trim() // trim leading or trailing whitespace
+      .toLowerCase() // convert to lowercase
+      .replace(/[^a-z0-9 -]/g, '') // remove non-alphanumeric characters
+      .replace(/\s+/g, '-') // replace spaces with hyphens
+      .replace(/-+/g, '-'); // remove consecutive hyphens
   }
 
   async loadSettings() {
@@ -505,11 +228,11 @@ export default class FilenameHeadingSyncPlugin extends Plugin {
   }
 }
 
-class FilenameHeadingSyncSettingTab extends PluginSettingTab {
-  plugin: FilenameHeadingSyncPlugin;
+class SlugifyHeadingFilenameSettingTab extends PluginSettingTab {
+  plugin: FilenameSlugHeadingSyncPlugin;
   app: App;
 
-  constructor(app: App, plugin: FilenameHeadingSyncPlugin) {
+  constructor(app: App, plugin: FilenameSlugHeadingSyncPlugin) {
     super(app, plugin);
     this.plugin = plugin;
     this.app = app;
@@ -517,19 +240,19 @@ class FilenameHeadingSyncSettingTab extends PluginSettingTab {
 
   display(): void {
     let { containerEl } = this;
-    let regexIgnoredFilesDiv: HTMLDivElement;
+    let regexIncludedFilesDiv: HTMLDivElement;
 
-    const renderRegexIgnoredFiles = (div: HTMLElement) => {
+    const renderRegexIncludedFiles = (div: HTMLElement) => {
       // empty existing div
       div.innerHTML = '';
 
-      if (this.plugin.settings.ignoreRegex === '') {
+      if (this.plugin.settings.includeRegex === '') {
         return;
       }
 
       try {
         const files = this.app.vault.getFiles();
-        const reg = new RegExp(this.plugin.settings.ignoreRegex);
+        const reg = new RegExp(this.plugin.settings.includeRegex);
 
         files
           .filter((file) => reg.exec(file.path) !== null)
@@ -543,50 +266,31 @@ class FilenameHeadingSyncSettingTab extends PluginSettingTab {
 
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Filename Heading Sync' });
+    containerEl.createEl('h2', { text: 'Slugify Heading as Filename' });
     containerEl.createEl('p', {
       text:
-        'This plugin will overwrite the first heading found in a file with the filename.',
-    });
-    containerEl.createEl('p', {
-      text:
-        'If no header is found, will insert a new one at the first line (after frontmatter).',
+        'This plugin will update the filename to the slugified version of the first h1 (if it exists).',
     });
 
     new Setting(containerEl)
-      .setName('Custom Illegal Characters/Strings')
+      .setName('Include Regex Rule')
       .setDesc(
-        'Type characters/strings separated by a comma. This input is space sensitive.',
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder('[],#,...')
-          .setValue(this.plugin.settings.userIllegalSymbols.join())
-          .onChange(async (value) => {
-            this.plugin.settings.userIllegalSymbols = value.split(',');
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName('Ignore Regex Rule')
-      .setDesc(
-        'Ignore rule in RegEx format. All files listed below will get ignored by this plugin.',
+        'Include rule in RegEx format. All files listed below will get included by this plugin.',
       )
       .addText((text) =>
         text
           .setPlaceholder('MyFolder/.*')
-          .setValue(this.plugin.settings.ignoreRegex)
+          .setValue(this.plugin.settings.includeRegex)
           .onChange(async (value) => {
             try {
               new RegExp(value);
-              this.plugin.settings.ignoreRegex = value;
+              this.plugin.settings.includeRegex = value;
             } catch {
-              this.plugin.settings.ignoreRegex = '';
+              this.plugin.settings.includeRegex = '';
             }
 
             await this.plugin.saveSettings();
-            renderRegexIgnoredFiles(regexIgnoredFilesDiv);
+            renderRegexIncludedFiles(regexIncludedFilesDiv);
           }),
       );
 
@@ -618,77 +322,27 @@ class FilenameHeadingSyncSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
-      .setName('New Heading Style')
-      .setDesc(
-        'Which Markdown heading style to use when creating new headings: Prefix ("# Heading") or Underline ("Heading\\n===").',
-      )
-      .addDropdown((cb) =>
-        cb
-          .addOption(HeadingStyle.Prefix, 'Prefix')
-          .addOption(HeadingStyle.Underline, 'Underline')
-          .setValue(this.plugin.settings.newHeadingStyle)
-          .onChange(async (value) => {
-            if (value === 'Prefix') {
-              this.plugin.settings.newHeadingStyle = HeadingStyle.Prefix;
-            }
-            if (value === 'Underline') {
-              this.plugin.settings.newHeadingStyle = HeadingStyle.Underline;
-            }
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName('Replace Heading Style')
-      .setDesc(
-        'Whether this plugin should replace existing heading styles when updating headings.',
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.replaceStyle)
-          .onChange(async (value) => {
-            this.plugin.settings.replaceStyle = value;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName('Underline String')
-      .setDesc(
-        'The string to use when insert Underline-style headings; should be some number of "="s.',
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder('===')
-          .setValue(this.plugin.settings.underlineString)
-          .onChange(async (value) => {
-            this.plugin.settings.underlineString = value;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    containerEl.createEl('h2', { text: 'Ignored Files By Regex' });
+    containerEl.createEl('h2', { text: 'Included Files By Regex' });
     containerEl.createEl('p', {
       text: 'All files matching the above RegEx will get listed here',
     });
 
-    regexIgnoredFilesDiv = containerEl.createDiv('test');
-    renderRegexIgnoredFiles(regexIgnoredFilesDiv);
+    regexIncludedFilesDiv = containerEl.createDiv('test');
+    renderRegexIncludedFiles(regexIncludedFilesDiv);
 
-    containerEl.createEl('h2', { text: 'Manually Ignored Files' });
+    containerEl.createEl('h2', { text: 'Manually Included Files' });
     containerEl.createEl('p', {
       text:
-        'You can ignore files from this plugin by using the "ignore this file" command',
+        'You can include files from this plugin by using the "include this file" command',
     });
 
-    // go over all ignored files and add them
-    for (let key in this.plugin.settings.ignoredFiles) {
-      const ignoredFilesSettingsObj = new Setting(containerEl).setDesc(key);
+    // go over all included files and add them
+    for (let key in this.plugin.settings.includedFiles) {
+      const includedFilesSettingsObj = new Setting(containerEl).setDesc(key);
 
-      ignoredFilesSettingsObj.addButton((button) => {
+      includedFilesSettingsObj.addButton((button) => {
         button.setButtonText('Delete').onClick(async () => {
-          delete this.plugin.settings.ignoredFiles[key];
+          delete this.plugin.settings.includedFiles[key];
           await this.plugin.saveSettings();
           this.display();
         });
