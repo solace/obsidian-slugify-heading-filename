@@ -13,6 +13,11 @@ This is an Obsidian plugin to keep the filename of a note synchronised with the 
 ## Use Case
 
 - A subset of your vault will be published, and you want web-safe and SEO friendly slugs based on filename
+- There are probably others
+
+## Limitations
+
+This is most likely incompatible with [obsidian-filename-heading-sync](https://github.com/dvcrn/obsidian-filename-heading-sync). But if you use the exclusion regex from that plugin in the inclusion regex for this one, it will ensure there is no overlap.
 
 ## Troubleshooting
 
