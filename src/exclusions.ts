@@ -1,15 +1,13 @@
 import { App, TFile } from 'obsidian';
 
-export function isExcalidraw(app: App, f: TFile) {
+export function isExcalidraw(app: App, f: TFile): boolean {
   if (f.extension === 'excalidraw' || /.*\.excalidraw\.md$/g.test(f.path)) {
     return true;
   }
   const fileCache = app.metadataCache.getFileCache(f);
-  return (
-    !!fileCache?.frontmatter && !!fileCache.frontmatter['excalidraw-plugin']
-  );
+  return !!fileCache?.frontmatter && !!fileCache.frontmatter['excalidraw-plugin'];
 }
 
-export function isExcluded(app: App, f: TFile) {
+export function isExcluded(app: App, f: TFile): boolean {
   return isExcalidraw(app, f);
 }
