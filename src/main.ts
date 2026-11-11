@@ -6,6 +6,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  SettingDefinitionItem,
   TAbstractFile,
   TFile,
 } from 'obsidian';
@@ -51,7 +52,7 @@ export default class FilenameSlugHeadingSyncPlugin extends Plugin {
         if (activeFile) {
           if (!checking) {
             this.settings.includedFiles[activeFile.path] = null;
-            this.saveSettings();
+            void this.saveSettings();
           }
           return true;
         }
@@ -61,7 +62,7 @@ export default class FilenameSlugHeadingSyncPlugin extends Plugin {
 
     this.addCommand({
       id: 'slugify-heading-as-filename',
-      name: 'Slugify Heading as Filename',
+      name: 'Force slugify filename',
       editorCallback: (editor: Editor, ctx: MarkdownView | MarkdownFileInfo) => {
         if (ctx.file) this.forceRenameFile(ctx.file);
       },
@@ -99,7 +100,7 @@ export default class FilenameSlugHeadingSyncPlugin extends Plugin {
   }
 
   forceRenameFile(file: TFile) {
-    this.app.vault.read(file).then(async (data) => {
+    void this.app.vault.read(file).then(async (data) => {
       const lines = data.split('\n');
       const start = this.findNoteStart(lines);
       const heading = this.findHeading(lines, start);
@@ -166,7 +167,7 @@ export default class FilenameSlugHeadingSyncPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<FilenameSlugHeadingSyncPluginSettings>);
   }
 
   async saveSettings() {
@@ -182,9 +183,46 @@ class SlugifyHeadingFilenameSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      {
+        name: 'Slugify Heading as Filename',
+        desc: 'This plugin will update the filename to the slugified version of the first h1 (if it exists).',
+      },
+      {
+        name: 'Include Regex Rule',
+        desc: 'Include rule in RegEx format. All files matching this regex will be included by this plugin.',
+        control: { type: 'text', key: 'includeRegex', placeholder: 'MyFolder/.*' },
+      },
+      {
+        name: 'Sorting Delimiter',
+        desc: 'If you have filename-based sorting, eg. "1 -- A Title", what delimiter are you using?',
+        control: { type: 'text', key: 'sortingDelimiter' },
+      },
+      {
+        name: 'Use File Save Hook',
+        desc: 'Whether this plugin should trigger when a file is saved. Disable this when you want to trigger sync only manually.',
+        control: { type: 'toggle', key: 'useFileSaveHook' },
+      },
+      {
+        name: 'Use File Open Hook',
+        desc: 'Whether this plugin should trigger when a file is opened, and not just on save. Disable this when you notice conflicts with other plugins that also act on file open.',
+        control: { type: 'toggle', key: 'useFileOpenHook' },
+      },
+    ];
+  }
+
+  getControlValue(key: string): unknown {
+    return this.plugin.settings[key as keyof FilenameSlugHeadingSyncPluginSettings];
+  }
+
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+    await this.plugin.saveSettings();
+  }
+
   display(): void {
     const { containerEl } = this;
-    let regexIncludedFilesDiv: HTMLDivElement;
 
     const renderRegexIncludedFiles = (div: HTMLElement) => {
       div.innerHTML = '';
@@ -201,76 +239,19 @@ class SlugifyHeadingFilenameSettingTab extends PluginSettingTab {
     };
 
     containerEl.empty();
-    containerEl.createEl('h2', { text: 'Slugify Heading as Filename' });
-    containerEl.createEl('p', {
-      text: 'This plugin will update the filename to the slugified version of the first h1 (if it exists).',
-    });
 
     new Setting(containerEl)
-      .setName('Include Regex Rule')
-      .setDesc('Include rule in RegEx format. All files listed below will get included by this plugin.')
-      .addText((text) =>
-        text
-          .setPlaceholder('MyFolder/.*')
-          .setValue(this.plugin.settings.includeRegex)
-          .onChange(async (value) => {
-            try {
-              new RegExp(value);
-              this.plugin.settings.includeRegex = value;
-            } catch {
-              this.plugin.settings.includeRegex = '';
-            }
-            await this.plugin.saveSettings();
-            renderRegexIncludedFiles(regexIncludedFilesDiv);
-          }),
-      );
+      .setName('Included Files By Regex')
+      .setDesc('All files matching the above regex will get listed here.')
+      .setHeading();
 
-    new Setting(containerEl)
-      .setName('Sorting Delimiter')
-      .setDesc('If you have filename-based sorting, eg. "1 -- A Title", what delimiter are you using?')
-      .addText((delimiter) =>
-        delimiter
-          .setValue(this.plugin.settings.sortingDelimiter)
-          .onChange(async (value) => {
-            this.plugin.settings.sortingDelimiter = value;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName('Use File Open Hook')
-      .setDesc('Whether this plugin should trigger when a file is opened, and not just on save. Disable this when you notice conflicts with other plugins that also act on file open.')
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.useFileOpenHook)
-          .onChange(async (value) => {
-            this.plugin.settings.useFileOpenHook = value;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName('Use File Save Hook')
-      .setDesc('Whether this plugin should trigger when a file is saved. Disable this when you want to trigger sync only manually.')
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.useFileSaveHook)
-          .onChange(async (value) => {
-            this.plugin.settings.useFileSaveHook = value;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    containerEl.createEl('h2', { text: 'Included Files By Regex' });
-    containerEl.createEl('p', { text: 'All files matching the above RegEx will get listed here' });
-
-    regexIncludedFilesDiv = containerEl.createDiv('test');
+    const regexIncludedFilesDiv = containerEl.createDiv();
     renderRegexIncludedFiles(regexIncludedFilesDiv);
 
-    containerEl.createEl('h2', { text: 'Manually Included Files' });
-    containerEl.createEl('p', {
-      text: 'You can include files from this plugin by using the "include this file" command',
-    });
+    new Setting(containerEl)
+      .setName('Manually Included Files')
+      .setDesc('You can include files from this plugin by using the "include this file" command.')
+      .setHeading();
 
     for (const key in this.plugin.settings.includedFiles) {
       new Setting(containerEl).setDesc(key).addButton((button) =>

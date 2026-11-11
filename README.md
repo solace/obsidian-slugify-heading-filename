@@ -1,4 +1,4 @@
-# Obsidian Slugify Heading as Filename
+# Slugify Heading as Filename
 
 This is an Obsidian plugin to keep the filename of a note synchronised with the slugified version of the first h1.
 
